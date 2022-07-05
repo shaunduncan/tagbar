@@ -1364,7 +1364,15 @@ endfunction
 
 " s:ExecuteCtagsOnFile() {{{2
 function! s:ExecuteCtagsOnFile(fname, realfname, typeinfo) abort
-    call tagbar#debug#log('ExecuteCtagsOnFile called [' . a:fname . ']')
+    let ctag_files = []
+
+    if exists('g:tagbar_dir_files')
+        let ctag_files += split(globpath(fnamemodify(a:fname, ':p:h'), '*'), '\n')
+    else
+        call add(ctag_files, a:fname)
+    endif
+
+    call tagbar#debug#log('ExecuteCtagsOnFile called [' . join(ctag_files, ' ') . ']')
 
     if has_key(a:typeinfo, 'ctagsargs') && type(a:typeinfo.ctagsargs) == type('')
         " if ctagsargs is a string, prepend and append space separators
@@ -1446,7 +1454,7 @@ function! s:ExecuteCtagsOnFile(fname, realfname, typeinfo) abort
         let ctags_bin = g:tagbar_ctags_bin
     endif
 
-    let ctags_cmd = s:EscapeCtagsCmd(ctags_bin, ctags_args, a:fname)
+    let ctags_cmd = s:EscapeCtagsCmd(ctags_bin, ctags_args, ctag_files)
     if ctags_cmd ==# ''
         return ''
     endif
@@ -1533,6 +1541,9 @@ function! s:ParseTagline(part1, part2, typeinfo, fileinfo) abort
             endif
         endif
     endfor
+
+    " Include the filename in the fields
+    let fielddict['fpath'] = filename
 
     " If the tag covers multiple scopes, split it up and create individual tags
     " for each scope so that the hierarchy can be displayed correctly.
@@ -2383,6 +2394,14 @@ function! s:JumpToTag(stay_in_tagbar, ...) abort
         let autoclose = 0
     endif
 
+    " if the file we're trying to go to is different than the one we loaded tags for, force override
+    if has_key(taginfo.fields, 'fpath')
+        if taginfo.fields.fpath !=? taginfo.fileinfo.fpath
+            echom 'XXX OVERWRITE FILE: ' . taginfo.fileinfo.fpath . ' --> ' . taginfo.fields.fpath
+            let taginfo.fileinfo.fpath = taginfo.fields.fpath
+        endif
+    endif
+
     call s:GotoFileWindow(taginfo.fileinfo)
 
     " Mark current position so it can be jumped back to
@@ -3059,7 +3078,14 @@ function! s:EscapeCtagsCmd(ctags_bin, args, ...) abort
 
     "if a filename was specified, add filename as final argument to ctags_cmd.
     if a:0 == 1
-        let ctags_cmd .= ' ' . shellescape(a:1)
+        " handle the case where we were either given a plain filename, or a list of files
+        if type(a:1)==type('')
+            let ctags_cmd .= ' ' . shellescape(a:1)
+        elseif type(a:1)==type([])
+            for fname in a:1
+                let ctags_cmd .= ' ' . shellescape(fname)
+            endfor
+        endif
     endif
 
     if exists('+shellslash')
@@ -3300,7 +3326,8 @@ function! s:GetFileWinnr(fileinfo) abort
     let filewinnr = 0
     let prevwinnr = winnr('#')
 
-    if winbufnr(prevwinnr) == a:fileinfo.bufnr &&
+    if has_key(a:fileinfo, 'bufnr') &&
+     \ winbufnr(prevwinnr) == a:fileinfo.bufnr &&
      \ !getwinvar(prevwinnr, '&previewwindow')
         let filewinnr = prevwinnr
     else
@@ -3326,14 +3353,22 @@ endfunction
 function! s:GotoFileWindow(fileinfo, ...) abort
     let noauto = a:0 > 0 ? a:1 : 0
 
+    echom 'XXX GOTO FILE WINDOW: ' . a:fileinfo.fpath
+
     let filewinnr = s:GetFileWinnr(a:fileinfo)
+
+    echom 'XXX filewinnr: ' . filewinnr
 
     " If there is no window with the correct buffer loaded then load it
     " into the first window that has a non-special buffer in it.
     if filewinnr == 0
         for i in range(1, winnr('$'))
             call s:goto_win(i, 1)
-            if &buftype ==# '' && !&previewwindow
+            let bufpath = expand('#'.bufnr('%').':p')
+
+            if bufpath == a:fileinfo.fpath && !&previewwindow
+                let a:fileinfo.bufnr = bufnr('%')
+
                 execute 'buffer ' . a:fileinfo.bufnr
                 break
             endif
